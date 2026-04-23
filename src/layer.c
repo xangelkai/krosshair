@@ -327,13 +327,6 @@ typedef struct device_data {
         uint32_t queue_count;
 } device_data_t;
 
-typedef struct command_buffer_data {
-        device_data_t* device_data;
-        VkCommandBufferLevel level;
-        VkCommandBuffer cmd_buffer;
-        queue_data_t* queue_data;
-} cmd_buffer_data_t;
-
 typedef struct krosshair_draw {
         VkCommandBuffer cmd_buffer;
 
@@ -524,21 +517,6 @@ static device_data_t* new_device_data(VkDevice device,
         map_object(HKEY(device_data->device), device_data,
                    "device_data->device");
         return device_data;
-}
-
-static cmd_buffer_data_t* new_cmd_buffer_data(VkCommandBuffer cmd_buffer,
-                                              VkCommandBufferLevel level,
-                                              device_data_t* device_data)
-{
-        cmd_buffer_data_t* cmdbuffer_data = malloc(sizeof(cmd_buffer_data_t));
-        cmdbuffer_data->device_data       = device_data;
-        cmdbuffer_data->cmd_buffer        = cmd_buffer;
-        cmdbuffer_data->level             = level;
-        printf("[*] mapping data->cmd_buffer obj: %lu %p\n",
-               HKEY(cmdbuffer_data->cmd_buffer), cmdbuffer_data);
-        map_object(HKEY(cmdbuffer_data->cmd_buffer), cmdbuffer_data,
-                   "cmdbuffer_data->cmd_buffer");
-        return cmdbuffer_data;
 }
 
 static void create_or_resize_buffer(device_data_t* device_data,
@@ -1328,7 +1306,7 @@ static void setup_swapchain_data_pipeline(swapchain_data_t* data)
         ms_info.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
         VkPipelineColorBlendAttachmentState color_attachment = {};
-        color_attachment.blendEnable                         = VK_FALSE;
+        color_attachment.blendEnable                         = VK_TRUE;
         color_attachment.colorWriteMask =
             VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -1436,6 +1414,12 @@ static void setup_swapchain_data(swapchain_data_t* data,
         VK_CHECK(device_data->vtable.GetSwapchainImagesKHR(
             device_data->device, data->swapchain, &n_images, NULL));
 
+        if (n_images > 16) {
+                printf("[KROSSHAIR_ERROR] swapchain has %u images, max supported"
+                       " is 16\n", n_images);
+                n_images = 16;
+        }
+
         VK_CHECK(device_data->vtable.GetSwapchainImagesKHR(
             device_data->device, data->swapchain, &n_images, data->images));
         data->n_images = n_images;
@@ -1499,10 +1483,8 @@ static void instance_data_map_physical_devices(instance_data_t* instance_data,
                 if (map) {
                         printf("[*] mapping physical_devices[%d] obj: %lu %p\n",
                                i, HKEY(physical_devices[i]), instance_data);
-                        char* fmt_phys_device;
-                        asprintf(&fmt_phys_device, "physical_devices[%d]", i);
                         map_object(HKEY(physical_devices[i]), instance_data,
-                                   fmt_phys_device);
+                                   "physical_device");
                 } else {
                         unmap_object(HKEY(physical_devices[i]));
                 }
@@ -1853,23 +1835,6 @@ static VkResult overlay_QueuePresentKHR(VkQueue queue,
         return result;
 }
 
-static VkResult overlay_AllocateCommandBuffers(
-    VkDevice device, const VkCommandBufferAllocateInfo* pAllocateInfo,
-    VkCommandBuffer* pCommandBuffers)
-{
-        device_data_t* device_data = FIND_OBJ(device_data_t, device);
-        VkResult result            = device_data->vtable.AllocateCommandBuffers(
-            device, pAllocateInfo, pCommandBuffers);
-        if (result != VK_SUCCESS) return result;
-
-        for (uint32_t i = 0; i < pAllocateInfo->commandBufferCount; i++) {
-                new_cmd_buffer_data(pCommandBuffers[i], pAllocateInfo->level,
-                                    device_data);
-        }
-
-        return result;
-}
-
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 overlay_GetInstanceProcAddr(VkInstance instance, const char* func_name);
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
@@ -1888,7 +1853,6 @@ name_to_funcptr_t name_to_funcptr_map[] = {
     {  "vkCreateSwapchainKHR",     (void*)overlay_CreateSwapchainKHR},
     { "vkDestroySwapchainKHR",    (void*)overlay_DestroySwapchainKHR},
     {        "vkCreateDevice",           (void*)overlay_CreateDevice},
-    {"AllocateCommandBuffers", (void*)overlay_AllocateCommandBuffers}
 };
 
 size_t name_to_funcptr_map_count =
