@@ -889,6 +889,41 @@ static void ensure_swapchain_crosshair(swapchain_data_t* data,
         data->crosshair_uploaded = 1;
 }
 
+static void destroy_draw(swapchain_data_t* data)
+{
+        device_data_t* device_data = data->device_data;
+        krosshair_draw_t* draw     = data->draw;
+        if (!draw) return;
+
+        if (draw->cmd_buffer != VK_NULL_HANDLE) {
+                device_data->vtable.FreeCommandBuffers(
+                    device_data->device, data->cmd_pool, 1, &draw->cmd_buffer);
+        }
+        if (draw->fence != VK_NULL_HANDLE)
+                device_data->vtable.DestroyFence(device_data->device,
+                                                 draw->fence, NULL);
+        if (draw->semaphore != VK_NULL_HANDLE)
+                device_data->vtable.DestroySemaphore(device_data->device,
+                                                     draw->semaphore, NULL);
+        if (draw->crossengine_semaphore != VK_NULL_HANDLE)
+                device_data->vtable.DestroySemaphore(
+                    device_data->device, draw->crossengine_semaphore, NULL);
+        if (draw->vertex_buffer != VK_NULL_HANDLE)
+                device_data->vtable.DestroyBuffer(device_data->device,
+                                                  draw->vertex_buffer, NULL);
+        if (draw->vertex_buffer_mem != VK_NULL_HANDLE)
+                device_data->vtable.FreeMemory(device_data->device,
+                                               draw->vertex_buffer_mem, NULL);
+        if (draw->index_buffer != VK_NULL_HANDLE)
+                device_data->vtable.DestroyBuffer(device_data->device,
+                                                  draw->index_buffer, NULL);
+        if (draw->index_buffer_mem != VK_NULL_HANDLE)
+                device_data->vtable.FreeMemory(device_data->device,
+                                               draw->index_buffer_mem, NULL);
+        free(draw);
+        data->draw = NULL;
+}
+
 /* allocated a krosshair_draw_t instance that must be free'd at the end of its
  * lifetime
  * */
@@ -898,12 +933,12 @@ static void create_draw(swapchain_data_t* data)
         krosshair_draw_t* draw     = data->draw;
 
         if (draw) {
-                if (device_data->vtable.GetFenceStatus(
-                        device_data->device, draw->fence) == VK_SUCCESS) {
-                        VK_CHECK(device_data->vtable.ResetFences(
-                            device_data->device, 1, &draw->fence));
-                        return;
-                }
+                VK_CHECK(device_data->vtable.WaitForFences(
+                    device_data->device, 1, &draw->fence, VK_TRUE,
+                    UINT64_MAX));
+                VK_CHECK(device_data->vtable.ResetFences(device_data->device,
+                                                         1, &draw->fence));
+                return;
         }
 
         VkSemaphoreCreateInfo sem_info = {};
@@ -1403,6 +1438,7 @@ static void setup_swapchain_data(swapchain_data_t* data,
 
         VK_CHECK(device_data->vtable.GetSwapchainImagesKHR(
             device_data->device, data->swapchain, &n_images, data->images));
+        data->n_images = n_images;
 
         VkImageViewCreateInfo view_info = {};
         view_info.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -1511,11 +1547,18 @@ static VkResult overlay_CreateSwapchainKHR(
 }
 
 static void overlay_DestroySwapchainKHR(VkDevice device,
-                                        VkSwapchainKHR* swapchain,
-                                        VkAllocationCallbacks* pAllocator)
+                                        VkSwapchainKHR swapchain,
+                                        const VkAllocationCallbacks* pAllocator)
 {
         device_data_t* device_data = FIND_OBJ(device_data_t, device);
         swapchain_data_t* data     = FIND_OBJ(swapchain_data_t, swapchain);
+
+        device_data->vtable.DeviceWaitIdle(device_data->device);
+
+        destroy_draw(data);
+
+        if (data->crosshair_uploaded)
+                shutdown_krosshair_image(data);
 
         for (size_t i = 0; i < data->n_images; i++) {
                 device_data->vtable.DestroyFramebuffer(
@@ -1524,7 +1567,28 @@ static void overlay_DestroySwapchainKHR(VkDevice device,
                     device_data->device, data->image_views[i], NULL);
         }
 
-        free(data->draw);
+        if (data->cmd_pool != VK_NULL_HANDLE)
+                device_data->vtable.DestroyCommandPool(device_data->device,
+                                                       data->cmd_pool, NULL);
+        if (data->pipeline != VK_NULL_HANDLE)
+                device_data->vtable.DestroyPipeline(device_data->device,
+                                                    data->pipeline, NULL);
+        if (data->pipeline_layout != VK_NULL_HANDLE)
+                device_data->vtable.DestroyPipelineLayout(
+                    device_data->device, data->pipeline_layout, NULL);
+        if (data->descriptor_pool != VK_NULL_HANDLE)
+                device_data->vtable.DestroyDescriptorPool(
+                    device_data->device, data->descriptor_pool, NULL);
+        if (data->descriptor_layout != VK_NULL_HANDLE)
+                device_data->vtable.DestroyDescriptorSetLayout(
+                    device_data->device, data->descriptor_layout, NULL);
+        if (data->crosshair_sampler != VK_NULL_HANDLE)
+                device_data->vtable.DestroySampler(
+                    device_data->device, data->crosshair_sampler, NULL);
+        if (data->render_pass != VK_NULL_HANDLE)
+                device_data->vtable.DestroyRenderPass(device_data->device,
+                                                      data->render_pass, NULL);
+
         unmap_object(HKEY(data->swapchain));
         device_data->vtable.DestroySwapchainKHR(device_data->device,
                                                 data->swapchain, NULL);
